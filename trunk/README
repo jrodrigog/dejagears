@@ -1,0 +1,171 @@
+
+Contents
+========
+
+This project contains this files and directories:
+
+ + database.py      : Database subsystem replacement module, not merged.
+ + djprovider.py    : Dejavu Identity Manager extension.
+ + djvisit.py       : Dejavu Visit Manager extension.
+ + dejavusession.py : Dejavu Session Manager extension.
+ + dejagears        : An example web application that uses all the provided services.
+
+
+Extending TurboGears
+====================
+
+Backup the current TurboGears database.py file:
+# mv /usr/lib/python2.5/site-packages/TurboGears-1.0.4.4-py2.5.egg/turbogears/database.py database.tg.py
+
+Replace the database.py file:
+# cp database.py /usr/lib/python2.5/site-packages/TurboGears-1.0.4.4-py2.5.egg/turbogears/
+
+Copy the Identity Provider to the identity package:
+# cp djprovider.py /usr/lib/python2.5/site-packages/TurboGears-1.0.4.4-py2.5.egg/turbogears/identity
+
+Copy the Visit Manager to the visit package:
+# cp djvisit.py /usr/lib/python2.5/site-packages/TurboGears-1.0.4.4-py2.5.egg/turbogears/visit
+
+Edit the entry points file for the TurboGears egg:
+# nano /usr/lib/python2.5/site-packages/TurboGears-1.0.4.4-py2.5.egg/EGG-INFO/entry_points.txt
+
+Add the new Identity Provider under [turbogears.identity.provider]:
+
+ [turbogears.identity.provider]
+ dejavu = turbogears.identity.djprovider:DejavuIdentityProvider
+
+Add the new Visit Manager under [turbogears.visit.manager]:
+
+ [turbogears.visit.manager]
+ dejavu = turbogears.visit.djvisit:DejavuVisitManager
+
+
+Creating and configuring the web aplication
+===========================================
+
+Start tg-admin and create a new web application, configure it like this:
+$ tg-admin quickstart
+Enter project name: dejagears
+Enter package name [dejagears]:
+Do you need Identity (usernames/passwords) in this project? [no] yes
+[...]
+
+Go into the dejagears webapplication subdirectory:
+$ cd dejagears
+
+Edit the application configuration file dejagears/config/app.cfg:
+$ nano dejagears/config/app.cfg
+
+Under the [global] section add a configuration directive for the application dburi.
+Its name must be the same as the web application's package name, dejagears in this example;
+and the value must point to a valid dejavu configuration file (Absolute or relative):
+ dejagears.dburi = "dejavu.cfg"
+
+Activate the Visit Manager (It should be activated):
+ visit.on = True
+
+Edit the visit.manager directive and change the value to "dejavu":
+ visit.manager="dejavu"
+
+Add a dburi configuration directive for the Visit Manager:
+ turbogears.visit.dburi="dejavu.cfg"
+
+Comment the block related to the Visit Tracking classes, we will use the internal classes;
+custom classes are allowed and supported as in SQLObject:
+ # Database class to use for visit tracking
+ # visit.soprovider.model = "dejagears.model.Visit"
+ # identity.soprovider.model.visit = "dejagears.model.VisitIdentity"
+
+Activate the Identity Provider (It should be activated):
+ identity.on = True
+
+Edit the identity.provider directive and change the value to "dejavu":
+ identity.provider="dejavu"
+
+Add a dburi configuration directive for the Indentity Provider:
+ turbogears.identity.dburi="dejavu.cfg"
+
+Comment the block related to the identity model, we will use the internal classes;
+custom classes are allowed and supported as in SQLObject:
+ # The classes you wish to use for your Identity model. Remember to not use reserved
+ # SQL keywords for class names (at least unless you specify a different table
+ # name using sqlmeta).
+ # identity.soprovider.model.user="dejagears.model.User"
+ # identity.soprovider.model.group="dejagears.model.Group"
+ # identity.soprovider.model.permission="dejagears.model.Permission"
+
+Activate the Session Filter (Disabled by default):
+ session_filter.on = True
+
+Set the dburi for the Session Filter:
+ turbogears.session_filter.dburi = "dejavu.cfg"
+
+
+Dejavu configuration file
+=========================
+
+Create a Dejavu's configuration file in the web applications main folder, name the
+file dejavu.cfg, the main section must be called as the configuration file, dejavu.cfg 
+in this example. You can use the next lines as is (Remember to configure your MySQL):
+
+[dejavu.cfg]
+Class  = mysql
+user   = mysql
+passwd = mysql
+host   = localhost
+db     = dejavu
+
+
+Installing the Session Filter
+=============================
+
+Copy the dejavusession.py file into the dejagears package (The application's main package):
+
+$ cp ../dejavusession.py dejagears/
+
+Edit the commands.py file, and add the procedural session_filter.storage_class directive:
+
+ # add this two lines in commands.py just before starting the server
+ from dejavusession import DejavuStorage
+ cherrypy.config.update({'session_filter.storage_class':DejavuStorage})
+
+ # the next line is already present in commands.py
+ turbogears.start_server(Root())
+
+
+Replacing the data model
+========================
+
+The data model created by tg-admin is only suitable for SQLObject. In order to use Dejavu you
+must code the data model from scratch. Take a look at the provided web application (dejagears
+subdirectory) if you need help creating the data model.
+
+
+Using the example web application
+=================================
+
+Start by creating a dejavu database in your MySQL by hand; there is a small glitch at the 
+moment and auto creating the database halts the Dejavu system.
+
+Then you can use this web page to insert some default values in the database:
+
+ http://localhost:8080/default_values
+
+You can test the session services by using this two urls:
+
+ http://localhost:8080/increment_counter
+ http://localhost:8080/read_counter
+
+You can test the identity services (Security) by using this urls:
+
+ http://localhost:8080/format_only
+ http://localhost:8080/root_only
+ http://localhost:8080/both
+ http://localhost:8080/all
+
+Here are some default users and passwords to access the system, these users are
+inserted at the default_values handler:
+
+ jrodrigo:123
+ root:root
+

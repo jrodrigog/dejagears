@@ -1,1 +1,1 @@
-/home/jrodrigo/webroot/dejagears/dejavusession.py
+/home/jrodrigo/webroot/dejav/dejavusession.py

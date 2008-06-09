@@ -21,7 +21,6 @@ class ConfigurationError(Exception):
 
 def start():
     """Start the CherryPy application server."""
-
     setupdir = dirname(dirname(__file__))
     curdir = getcwd()
 
@@ -49,9 +48,9 @@ def start():
     turbogears.update_config(configfile=configfile,
         modulename="dejagears.config")
 
-    from dejavusession import DejavuStorage
-    cherrypy.config.update({'session_filter.storage_class':DejavuStorage})
-
     from dejagears.controllers import Root
+
+    from dejavusession import DejavuStorage
+    cherrypy.config.update( { "session_filter.storage_class" : DejavuStorage })
 
     turbogears.start_server(Root())

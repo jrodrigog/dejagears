@@ -8,7 +8,6 @@ from turbogears.util import load_class
 from turbogears import identity
 from dejavu import Unit, UnitProperty, UnitSequencer, UnitSequencerInteger, TriggerProperty
 from turbogears.database import PackageHub
-from soprovider import DeprecatedAttr
 import turbogears
 
 hub = PackageHub("turbogears.identity")
@@ -31,42 +30,58 @@ user_group_class = None
 group_permission_class = None
 
 class DejavuIdentity(object):
-    def __init__(self, visit_key, user=None):
+    """Identity that uses a model from a database (via Dejavu)."""
+    def __init__(self, visit_key=None, user=None):
+        self.visit_key = visit_key
         if user:
-            self._user= user
-        self.visit_key= visit_key
-    
-    def _get_user(self):
+            self._user = user
+            if visit_key is not None:
+                self.login()
+
+    @property
+    def user(self):
+        """Get user instance for this identity."""
+        global hub, user_class
         try:
             return self._user
         except AttributeError:
             pass
-        box = hub.getConnection()
-        box.start( isolation = turbogears.database.READ_COMMITTED )
-        visit = box.unit( visit_class << user_class, lambda v,u: v.visit_key == self.visit_key )
+        # Attempt to load the user. After this code executes, there *will* be
+        # a _user attribute, even if the value is None.
+        visit = self.visit_link
         if visit:
-            if visit[1].user_id == None:
-                self._user = None
+            box = hub.getConnection()
+            box.start( isolation = turbogears.database.READ_COMMITTED )
+            self._user = box.unit( user_class, user_id = visit.user_id )
+            box.flush_all()
+            if self._user == None:
                 log.warning( "No such user with ID: %s", visit.user_id )
-            else:
-                self._user = visit[1]
         else:
             self._user = None
-        box.flush_all()
         return self._user
-    user= property(_get_user)
-    
-    def _get_user_name(self):
+
+    @property
+    def user_name(self):
+        """Get user name of this identity."""
         if not self.user:
             return None
         return self.user.user_name
-    user_name= property(_get_user_name)
 
-    def _get_anonymous(self):
+    @property
+    def user_id(self):
+        """Get user id of this identity."""
+        if not self.user:
+            return None
+        return self.user.user_id
+
+    @property
+    def anonymous(self):
+        """Return true if not logged in."""
         return not self.user
-    anonymous= property(_get_anonymous)
-    
-    def _get_permissions(self):
+
+    @property
+    def permissions(self):
+        """Get set of permission names of this identity."""
         try:
             return self._permissions
         except AttributeError:
@@ -77,12 +92,13 @@ class DejavuIdentity(object):
         else:
             box = hub.getConnection()
             box.start( isolation = dejavu.storage.isolation.READ_COMMITTED )
-            self._permissions = frozenset( [ p.permission_name for p in self.user.permissions ] )
+            self._permissions = frozenset( p.permission_name for p in self.user.permissions )
             box.flush_all()
         return self._permissions
-    permissions= property(_get_permissions)
-    
-    def _get_groups(self):
+
+    @property
+    def groups(self):
+        """Get set of group names of this identity."""
         try:
             return self._groups
         except AttributeError:
@@ -93,36 +109,66 @@ class DejavuIdentity(object):
         else:
             box = hub.getConnection()
             box.start( isolation = dejavu.storage.isolation.READ_COMMITTED )
-            self._groups = frozenset( [ g.group_name for g in self.user.groups ] )
+            self._groups = frozenset( g.group_name for g in self.user.groups )
             box.flush_all()
         return self._groups
-    groups= property(_get_groups)
+
+    @property
+    def group_ids(self):
+        """Get set of group IDs of this identity."""
+        try:
+            return self._group_ids
+        except AttributeError:
+            # Group ids haven't been computed yet
+            pass
+        if not self.user:
+            self._group_ids= frozenset()
+        else:
+            box = hub.getConnection()
+            box.start( isolation = dejavu.storage.isolation.READ_COMMITTED )
+            self._group_ids = frozenset( g.group_id for g in self.user.groups )
+            box.flush_all()
+        return self._group_ids
+
+    @property
+    def visit_link(self):
+        """Get the visit link to this identity."""
+        if self.visit_key is None:
+            return None
+        return visit_class.by_visit_key(self.visit_key)
+
+    def login(self):
+        """Set the link between this identity and the visit."""
+        visit = self.visit_link
+        box = hub.getConnection()
+        box.start( isolation = dejavu.storage.isolation.READ_COMMITTED )
+        if visit:
+            visit = box.unit( visit_class, visit_key = visit.visit_key )
+            visit.user_id = self._user.user_id
+        else:
+            visit = visit_class( visit_key = self.visit_key, user_id = self._user.user_id )
+            box.memorize( visit )
+        box.flush_all()
 
     def logout(self):
-        '''
-        Remove the link between this identity and the visit.
-        '''
+        """Remove the link between this identity and the visit."""
         if self.visit_key != None:
             box = hub.getConnection()
-            box.start( isolation = dejavu.storage.isolation.READ_COMMITED )
+            box.start( isolation = dejavu.storage.isolation.READ_COMMITTED )
             visit = box.unit( visit_class, visit_key = self.visit_key )
             if visit: visit.forget()
             box.flush_all()
         # Clear the current identity
-        anon = DejavuIdentity(None,None)
-        #XXX if user is None anonymous will be true, no need to set attr.
-        #anon.anonymous= True
-        identity.set_current_identity( anon )
+        identity.set_current_identity( DejavuIdentity() )
 
     
 class DejavuIdentityProvider(object):
     
     def __init__(self):
+        global user_class, group_class, permission_class, visit_class, user_group_class, group_permission_class
         super(DejavuIdentityProvider, self).__init__()
         get=turbogears.config.get
-        
-        global user_class, group_class, permission_class, visit_class, user_group_class, group_permission_class
-        
+
         user_class_path= get( "identity.djprovider.model.user", 
                               __name__ + ".TG_User" )
         user_class= load_class(user_class_path)
@@ -186,7 +232,7 @@ class DejavuIdentityProvider(object):
 
     def validate_identity( self, user_name, password, visit_key ):
         box = hub.getConnection()
-        box.start( isolation = dejavu.storage.isolation.SERIALIZABLE )
+        box.start( isolation = dejavu.storage.isolation.REPEATABLE_READ )
         user_name = to_db_encoding( user_name, self.user_class_db_encoding )
         user = box.unit( user_class, user_name = user_name )
         if user:
@@ -208,17 +254,75 @@ class DejavuIdentityProvider(object):
         box.flush_all()
         return ret
 
+    def validate_identity(self, user_name, password, visit_key):
+        """Validate the identity represented by user_name using the password.
+
+        Must return either None if the credentials weren't valid or an object
+        with the following properties:
+            user_name: original user name
+            user: a provider dependant object (TG_User or similar)
+            groups: a set of group names
+            permissions: a set of permission names
+
+        """
+        ret = None
+        user_name = to_db_encoding(user_name, self.user_class_db_encoding)
+        box = hub.getConnection()
+        box.start( isolation = dejavu.storage.isolation.READ_COMMITTED )
+        user = box.unit( user_class, user_name = user_name )
+        if user:
+            if not self.validate_password(user, user_name, password):
+                log.info("Passwords don't match for user: %s", user_name)
+                return None
+            log.info("Associating user (%s) with visit (%s)",
+                user_name, visit_key)
+            ret = DejavuIdentity(visit_key, user)
+        else:
+            log.warning("No such user: %s", user_name)
+        box.flush_all()
+        return ret
+
     def validate_password(self, user, user_name, password):
+        """Check the user_name and password against existing credentials.
+
+        Note: user_name is not used here, but is required by external
+        password validation schemes that might override this method.
+        If you use SqlObjectIdentityProvider, but want to check the passwords
+        against an external source (i.e. PAM, a password file, Windows domain),
+        subclass SqlObjectIdentityProvider, and override this method.
+
+        """
         return user.password == self.encrypt_password(password)
 
     def load_identity( self, visit_key ):
+        """Lookup the principal represented by user_name.
+
+        Return None if there is no principal for the given user ID.
+
+        Must return an object with the following properties:
+            user_name: original user name
+            user: a provider dependant object (TG_User or similar)
+            groups: a set of group names
+            permissions: a set of permission names
+
+        """
         return DejavuIdentity( visit_key )
-    
+
     def anonymous_identity( self ):
+        """Return anonymous identity.
+
+        Must return an object with the following properties:
+            user_name: original user name
+            user: a provider dependant object (TG_User or similar)
+            groups: a set of group names
+            permissions: a set of permission names
+
+        """
         return DejavuIdentity( None )
 
     def authenticated_identity(self, user):
-        return DejavuIdentity(None, user)
+        """Constructs Identity object for users with no visit_key."""
+        return DejavuIdentity( user = user )
 
 class TG_Group(Unit):
     group_id = UnitProperty( int )
@@ -228,10 +332,6 @@ class TG_Group(Unit):
     ID = None
     identifiers = ("group_id",)
     sequencer = UnitSequencerInteger()
-
-    # Old names
-    groupId = DeprecatedAttr( "groupId", "group_name" )
-    displayName = DeprecatedAttr( "displayName", "display_name" )
     
     def get_users( self ):
         return set( [ i[2] for i in self.sandbox.recall(
@@ -245,13 +345,12 @@ class TG_Group(Unit):
             lambda g,gp,p: g.group_id == self.group_id ) ] )
     permissions = property( get_permissions )
 
+@jsonify.when( "isinstance(obj, TG_Group)" )
 def jsonify_group(obj):
     result = turbogears.database.so_to_dict( obj )
     result["users"] = [ u.user_name for u in obj.users ]
     result["permissions"] = [ p.permission_name for p in obj.permissions ]
     return result
-
-jsonify_group = jsonify.when( "isinstance(obj, TG_Group)" )( jsonify_group )
 
 class PasswordProperty( TriggerProperty ):
     def on_set( self, unit, old_value ):
@@ -275,46 +374,38 @@ class TG_User(Unit):
     user_name = UnitProperty( unicode, index=True, hints = { "bytes":16 } )
     email_address = UnitProperty( unicode, index=True, hints = { "bytes":255 } )
     display_name = UnitProperty( unicode, hints = { "bytes":255 } )
-    password = PasswordProperty( unicode, hints={ "bytes":40 } )
+    password = PasswordProperty( unicode, hints = { "bytes":40 } )
     created = UnitProperty( datetime.datetime )
     ID = None
     identifiers = ("user_id",)
     sequencer = UnitSequencerInteger()
 
-    # Old attribute names
-    userId = DeprecatedAttr( "userId", "user_name" )
-    emailAddress = DeprecatedAttr( "emailAddress", "email_address" )
-    displayName = DeprecatedAttr( "displayName", "display_name" )
-
-    def get_permissions( self ):
+    @property
+    def permissions( self ):
         permissions = set()
         for user, user_group, group, group_permission, permission in self.sandbox.recall(
             user_class + user_group_class + group_class + group_permission_class + permission_class,
             lambda u,ug,g,gp,p: u.user_id == self.user_id ):
             permissions = permissions | set( [ permission ] )
         return permissions
-    permissions = property( get_permissions )
 
-    def get_groups( self ):
+    @property
+    def groups( self ):
         return set( [ i[2] for i in self.sandbox.recall(
             user_class + user_group_class + group_class,
             lambda u,ug,g: u.user_id == self.user_id ) ] )
-    groups = property( get_groups )
 
     def set_password_raw( self, password ):
         "Saves the password as-is to the database."
-        #self._SO_set_password(password)
         raise NotImplementedError
 
+@jsonify.when( "isinstance(obj, TG_User)" )
 def jsonify_user( obj ):
     result = turbogears.database.so_to_dict( obj )
     del result["password"]
     result["groups"] = [ g.group_name for g in obj.groups ]
     result["permissions"] = [ p.permission_name for p in obj.permissions ]
     return result
-
-jsonify_user = jsonify.when( "isinstance(obj, TG_User)" )( jsonify_user )
-
 
 class TG_Permission( Unit ):
     permission_id = UnitProperty( int )
@@ -323,22 +414,18 @@ class TG_Permission( Unit ):
     ID = None
     identifiers = ("permission_id",)
     sequencer = UnitSequencerInteger()
-    
-    # Old attributes
-    permissionId= DeprecatedAttr( "permissionId", "permission_name" )
-    
+
+    @property
     def get_groups( self ):
         return set( [ i[2] for i in self.sandbox.recall(
             permission_class + group_permission_class + group_class,
             lambda p,gp,g: p.permission_id == self.permission_id ) ] )
-    groups = property( get_groups )
 
+@jsonify.when( "isinstance(obj, TG_Permission)" )
 def jsonify_permission(obj):
     result = turbogears.database.so_to_dict( obj )
     result["groups"] = [ g.group_name for g in obj.groups ]
     return result
-
-jsonify_permission = jsonify.when( "isinstance(obj, TG_Permission)" )( jsonify_permission )
 
 class TG_VisitIdentity(Unit):
     visit_key = UnitProperty( str, hints={ "bytes":40 } )
@@ -346,8 +433,15 @@ class TG_VisitIdentity(Unit):
     ID = None
     identifiers = ( "visit_key", )
     sequencer = UnitSequencer()
+    @classmethod
+    def by_visit_key( cls, key ):
+        global hub, visit_class
+        box = hub.getConnection()
+        box.start( isolation = turbogears.database.READ_COMMITTED )
+        visit = box.unit( visit_class, visit_key = key )
+        box.flush_all()
+        return visit
 TG_VisitIdentity.many_to_one( "user_id", TG_User, "user_id" )
-
 
 class TG_UserGroup( Unit ):
     user_id = UnitProperty( int )
@@ -357,7 +451,6 @@ class TG_UserGroup( Unit ):
     sequencer = UnitSequencer()
 TG_UserGroup.many_to_one( "user_id", TG_User, "user_id" )
 TG_UserGroup.many_to_one( "group_id", TG_Group, "group_id" )
-
 
 class TG_GroupPermission( Unit ):
     permission_id = UnitProperty( int )

@@ -1,0 +1,168 @@
+--- /usr/lib/python2.5/site-packages/TurboGears-1.1b1dev_r4679-py2.5.egg/turbogears/database_old.py	2008-06-05 22:35:04.000000000 +0200
++++ database.py	2008-06-06 11:15:09.000000000 +0200
+@@ -6,6 +6,14 @@
+ 
+ import cherrypy
+ from cherrypy.filters.basefilter import BaseFilter
++import turbogears
++
++try:
++    import dejavu
++    import atexit
++    from threading import local as threading_local
++except ImportError:
++    dejavu = None
+ 
+ try:
+     import sqlalchemy, sqlalchemy.orm
+@@ -20,6 +28,20 @@
+ except ImportError:
+     sqlobject = None
+ 
++# This key is non existant (turbogears.orm)
++# there could exist import issues with this approach
++# right now dejavu is the default for testing pourposes
++_orm = turbogears.config.get( "turbogears.orm", "dejavu" )
++if _orm == "sqlobject":
++    sqlalchemy = None
++    dejavu = None
++elif _orm == "sqlalchemy":
++    sqlobject = None
++    dejavu = None
++elif _orm == "dejavu":
++    sqlobject = None
++    sqlalchemy = None
++
+ from peak.rules import abstract, when, NoApplicableMethods
+ 
+ from turbogears import config
+@@ -272,6 +294,104 @@
+             del self.threadingLocal.old_conn
+             self.threadingLocal.connection.cache.clear()
+ 
++# provide support for Dejavu
++elif dejavu:
++    _arena = None
++    _stores = dict()
++
++    READ_UNCOMMITTED = dejavu.storage.isolation.READ_UNCOMMITTED
++    READ_COMMITTED = dejavu.storage.isolation.READ_COMMITTED
++    REPEATABLE_READ = dejavu.storage.isolation.REPEATABLE_READ
++    SERIALIZABLE = dejavu.storage.isolation.SERIALIZABLE
++
++    def _arena_shutdown():
++        global _arena
++        if _arena:
++            log.info("Arena shutdown...")
++            _arena.shutdown()
++    atexit.register( _arena_shutdown )
++
++    class AutoConnectHub(object):
++        """Connects to the database once per thread. The AutoConnectHub also
++        provides convenient methods for managing transactions."""
++        uri = None
++        params = {}
++
++        def __init__(self, uri=None, supports_transactions=True):
++            if not uri:
++                uri = config.get("dejavu.dburi")
++            self.uri = uri
++            self.supports_transactions = supports_transactions
++            self.threadingLocal = threading_local()
++            hub_registry.add(self)
++
++        def getConnection(self):
++            """Returns the Dejavu SandBox"""
++            global _arena, _stores
++            try:
++                self.threadingLocal.boxes[ self.uri ]
++            except ( AttributeError, KeyError ):
++                if not _arena:
++                    log.info("Arena startup...")
++                    _arena = dejavu.Arena()
++                if not _stores.has_key( self.uri ):
++                    log.info("New store: %s" % self.uri )
++                    _arena.load( self.uri )
++                    _stores[ self.uri ] = True
++                try:
++                    self.threadingLocal.boxes
++                except AttributeError:
++                    self.threadingLocal.boxes = {}
++                self.threadingLocal.boxes[ self.uri ] = self.begin( _arena.new_sandbox() )
++            return self.threadingLocal.boxes[ self.uri ]
++
++        def reset(self):
++            """Used for testing purposes. This drops all of the connections
++            that are being held."""
++            self.threadingLocal = threading_local()
++
++        def begin(self, conn=None):
++            """Starts a transaction."""
++            if not self.supports_transactions:
++                return conn
++            if not conn:
++                conn = self.getConnection()
++            conn.start( isolation=READ_COMMITTED )
++            return conn
++
++        def commit(self):
++            """Commits the current transaction."""
++            if not self.supports_transactions:
++                return
++            try:
++                conn = self.threadingLocal.boxes[ self.uri ]
++            except  ( AttributeError, KeyError ):
++                return
++            conn.commit()
++
++        def rollback(self):
++            """Rolls back the current transaction."""
++            if not self.supports_transactions:
++                return
++            try:
++                conn = self.threadingLocal.boxes[ self.uri ]
++            except  ( AttributeError, KeyError ):
++                return
++            conn.rollback()
++
++        def end(self):
++            """Ends the transaction, returning to a standard connection."""
++            if not self.supports_transactions:
++                return
++            try:
++                conn = self.threadingLocal.boxes[ self.uri ]
++            except  ( AttributeError, KeyError ):
++                return
++            conn.flush_all()
++
++# The PackageHub class is common for SQLObject and Dejavu
++if dejavu or sqlobject:
++
+     class PackageHub(object):
+         """Transparently proxies to an AutoConnectHub for the URI
+         that is appropriate for this package. A package URI is
+@@ -317,6 +437,7 @@
+                 hub = AutoConnectHub(dburi, supports_transactions=trans)
+                 _hubs[dburi] = hub
+             self.hub = hub
++
+ else:
+     class AutoConnectHub(object):
+         pass
+@@ -512,6 +633,10 @@
+         so_joins(sqlclass.__base__, joins)
+     return joins
+ 
++def dj_to_dict(unit):
++    """Converts a Dejavu unit to a dictionary based on columns"""
++    return dict( zip( unit.properties, [ getattr( unit, property ) for property in unit.properties ] ) )
++
+ class EndTransactionsFilter(BaseFilter):
+     def on_end_resource(self):
+         if _use_sa():
+@@ -522,4 +647,4 @@
+            "get_engine", "get_metadata", "bind_metadata", "create_session",
+            "PackageHub", "AutoConnectHub", "set_db_uri",
+            "commit_all", "rollback_all", "end_all", "so_to_dict",
+-           "so_columns", "so_joins", "EndTransactionsFilter"]
++           "so_columns", "so_joins", "dj_to_dict", "EndTransactionsFilter"]

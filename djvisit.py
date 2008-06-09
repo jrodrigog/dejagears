@@ -19,11 +19,11 @@ visit_class = None
 class DejavuVisitManager(BaseVisitManager):
     def __init__(self, timeout):
         global visit_class
-        super(DejavuVisitManager,self).__init__( timeout )
         visit_class_path = config.get("visit.djprovider.model", __name__ + ".TG_Visit")
         visit_class = load_class(visit_class_path)
         if visit_class:
             log.info("Succesfully loaded \"%s\"" % visit_class_path)
+        super(DejavuVisitManager,self).__init__( timeout )
 
     def create_model(self):
         global visit_class
@@ -62,7 +62,7 @@ class DejavuVisitManager(BaseVisitManager):
         if hub is None: # if VisitManager extension wasn't shutted down cleanly
             return
         box = hub.getConnection()
-        box.start( isolation = turbogears.database.SERIALIZABLE )
+        box.start( isolation = turbogears.database.REPEATABLE_READ )
         try:
             try:
                 # Now update each of the visits with the most recent expiry

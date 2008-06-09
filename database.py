@@ -328,22 +328,38 @@ elif dejavu:
         def getConnection(self):
             """Returns the Dejavu SandBox"""
             global _arena, _stores
+            uri_hash = ( self.uri, id( self.uri ) )[ isinstance( self.uri, dict ) ]
             try:
-                self.threadingLocal.boxes[ self.uri ]
+                return self.threadingLocal.boxes[ uri_hash ]
             except ( AttributeError, KeyError ):
                 if not _arena:
                     log.info("Arena startup...")
                     _arena = dejavu.Arena()
-                if not _stores.has_key( self.uri ):
-                    log.info("New store: %s" % self.uri )
-                    _arena.load( self.uri )
-                    _stores[ self.uri ] = True
+                if isinstance( self.uri, dict ):
+                    # Load a dictionary of dictionaries as the store configuration
+                    for key in self.uri:
+                        if not _stores.has_key( "store://" + key ):
+                            try:
+                                klass = self.uri[ key ][ "Class" ]
+                                del self.uri[ key ][ "Class" ]
+                                _arena.add_store( key, klass, self.uri[ key ] )
+                                _stores[ "store://" + key ] = True
+                                log.info("New store: %s" % key )
+                            except KeyError:
+                                log.error("Unknown class for store %s" % key )
+                else:
+                    # Load from a file, cache the file
+                    if not _stores.has_key( "file://" + self.uri ):
+                        _arena.load( self.uri )
+                        _stores[ "file://" + self.uri ] = True
+                        log.info("New store: %s" % self.uri )
                 try:
                     self.threadingLocal.boxes
                 except AttributeError:
                     self.threadingLocal.boxes = {}
-                self.threadingLocal.boxes[ self.uri ] = self.begin( _arena.new_sandbox() )
-            return self.threadingLocal.boxes[ self.uri ]
+                box = self.begin( _arena.new_sandbox() )
+                self.threadingLocal.boxes[ uri_hash ] = box
+            return box
 
         def reset(self):
             """Used for testing purposes. This drops all of the connections
@@ -364,7 +380,7 @@ elif dejavu:
             if not self.supports_transactions:
                 return
             try:
-                conn = self.threadingLocal.boxes[ self.uri ]
+                conn = self.threadingLocal.boxes[ ( self.uri, id( self.uri ) )[ isinstance( self.uri, dict ) ] ]
             except  ( AttributeError, KeyError ):
                 return
             conn.commit()
@@ -374,7 +390,7 @@ elif dejavu:
             if not self.supports_transactions:
                 return
             try:
-                conn = self.threadingLocal.boxes[ self.uri ]
+                conn = self.threadingLocal.boxes[ ( self.uri, id( self.uri ) )[ isinstance( self.uri, dict ) ] ]
             except  ( AttributeError, KeyError ):
                 return
             conn.rollback()
@@ -384,7 +400,7 @@ elif dejavu:
             if not self.supports_transactions:
                 return
             try:
-                conn = self.threadingLocal.boxes[ self.uri ]
+                conn = self.threadingLocal.boxes[ ( self.uri, id( self.uri ) )[ isinstance( self.uri, dict ) ] ]
             except  ( AttributeError, KeyError ):
                 return
             conn.flush_all()
@@ -427,15 +443,18 @@ if dejavu or sqlobject:
                 dburi = config.get("sqlobject.dburi", None)
             if not dburi:
                 raise KeyError, "No database configuration found!"
-            if dburi.startswith("notrans_"):
+            if isinstance( dburi, dict ) and dburi.has_key("__notrans__"):
+                trans = False
+            elif not isinstance( dburi, dict ) and dburi.startswith("notrans_"):
                 dburi = dburi[8:]
                 trans = False
             else:
                 trans = True
-            hub = _hubs.get(dburi, None)
+            uri_hash = ( dburi, id( dburi ) )[ isinstance( dburi, dict ) ]
+            hub = _hubs.get( uri_hash, None )
             if not hub:
                 hub = AutoConnectHub(dburi, supports_transactions=trans)
-                _hubs[dburi] = hub
+                _hubs[uri_hash] = hub
             self.hub = hub
 
 else:

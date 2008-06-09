@@ -1,5 +1,5 @@
 --- /usr/lib/python2.5/site-packages/TurboGears-1.1b1dev_r4679-py2.5.egg/turbogears/database_old.py	2008-06-05 22:35:04.000000000 +0200
-+++ database.py	2008-06-06 11:15:09.000000000 +0200
++++ database.py	2008-06-06 12:22:05.000000000 +0200
 @@ -6,6 +6,14 @@
  
  import cherrypy
@@ -36,7 +36,7 @@
  from peak.rules import abstract, when, NoApplicableMethods
  
  from turbogears import config
-@@ -272,6 +294,104 @@
+@@ -272,6 +294,120 @@
              del self.threadingLocal.old_conn
              self.threadingLocal.connection.cache.clear()
  
@@ -74,22 +74,38 @@
 +        def getConnection(self):
 +            """Returns the Dejavu SandBox"""
 +            global _arena, _stores
++            uri_hash = ( self.uri, id( self.uri ) )[ isinstance( self.uri, dict ) ]
 +            try:
-+                self.threadingLocal.boxes[ self.uri ]
++                return self.threadingLocal.boxes[ uri_hash ]
 +            except ( AttributeError, KeyError ):
 +                if not _arena:
 +                    log.info("Arena startup...")
 +                    _arena = dejavu.Arena()
-+                if not _stores.has_key( self.uri ):
-+                    log.info("New store: %s" % self.uri )
-+                    _arena.load( self.uri )
-+                    _stores[ self.uri ] = True
++                if isinstance( self.uri, dict ):
++                    # Load a dictionary of dictionaries as the store configuration
++                    for key in self.uri:
++                        if not _stores.has_key( "store://" + key ):
++                            try:
++                                klass = self.uri[ key ][ "Class" ]
++                                del self.uri[ key ][ "Class" ]
++                                _arena.add_store( key, klass, self.uri[ key ] )
++                                _stores[ "store://" + key ] = True
++                                log.info("New store: %s" % key )
++                            except KeyError:
++                                log.error("Unknown class for store %s" % key )
++                else:
++                    # Load from a file, cache the file
++                    if not _stores.has_key( "file://" + self.uri ):
++                        _arena.load( self.uri )
++                        _stores[ "file://" + self.uri ] = True
++                        log.info("New store: %s" % self.uri )
 +                try:
 +                    self.threadingLocal.boxes
 +                except AttributeError:
 +                    self.threadingLocal.boxes = {}
-+                self.threadingLocal.boxes[ self.uri ] = self.begin( _arena.new_sandbox() )
-+            return self.threadingLocal.boxes[ self.uri ]
++                box = self.begin( _arena.new_sandbox() )
++                self.threadingLocal.boxes[ uri_hash ] = box
++            return box
 +
 +        def reset(self):
 +            """Used for testing purposes. This drops all of the connections
@@ -110,7 +126,7 @@
 +            if not self.supports_transactions:
 +                return
 +            try:
-+                conn = self.threadingLocal.boxes[ self.uri ]
++                conn = self.threadingLocal.boxes[ ( self.uri, id( self.uri ) )[ isinstance( self.uri, dict ) ] ]
 +            except  ( AttributeError, KeyError ):
 +                return
 +            conn.commit()
@@ -120,7 +136,7 @@
 +            if not self.supports_transactions:
 +                return
 +            try:
-+                conn = self.threadingLocal.boxes[ self.uri ]
++                conn = self.threadingLocal.boxes[ ( self.uri, id( self.uri ) )[ isinstance( self.uri, dict ) ] ]
 +            except  ( AttributeError, KeyError ):
 +                return
 +            conn.rollback()
@@ -130,7 +146,7 @@
 +            if not self.supports_transactions:
 +                return
 +            try:
-+                conn = self.threadingLocal.boxes[ self.uri ]
++                conn = self.threadingLocal.boxes[ ( self.uri, id( self.uri ) )[ isinstance( self.uri, dict ) ] ]
 +            except  ( AttributeError, KeyError ):
 +                return
 +            conn.flush_all()
@@ -141,15 +157,31 @@
      class PackageHub(object):
          """Transparently proxies to an AutoConnectHub for the URI
          that is appropriate for this package. A package URI is
-@@ -317,6 +437,7 @@
+@@ -307,16 +443,20 @@
+                 dburi = config.get("sqlobject.dburi", None)
+             if not dburi:
+                 raise KeyError, "No database configuration found!"
+-            if dburi.startswith("notrans_"):
++            if isinstance( dburi, dict ) and dburi.has_key("__notrans__"):
++                trans = False
++            elif not isinstance( dburi, dict ) and dburi.startswith("notrans_"):
+                 dburi = dburi[8:]
+                 trans = False
+             else:
+                 trans = True
+-            hub = _hubs.get(dburi, None)
++            uri_hash = ( dburi, id( dburi ) )[ isinstance( dburi, dict ) ]
++            hub = _hubs.get( uri_hash, None )
+             if not hub:
                  hub = AutoConnectHub(dburi, supports_transactions=trans)
-                 _hubs[dburi] = hub
+-                _hubs[dburi] = hub
++                _hubs[uri_hash] = hub
              self.hub = hub
 +
  else:
      class AutoConnectHub(object):
          pass
-@@ -512,6 +633,10 @@
+@@ -512,6 +652,10 @@
          so_joins(sqlclass.__base__, joins)
      return joins
  
@@ -160,7 +192,7 @@
  class EndTransactionsFilter(BaseFilter):
      def on_end_resource(self):
          if _use_sa():
-@@ -522,4 +647,4 @@
+@@ -522,4 +666,4 @@
             "get_engine", "get_metadata", "bind_metadata", "create_session",
             "PackageHub", "AutoConnectHub", "set_db_uri",
             "commit_all", "rollback_all", "end_all", "so_to_dict",
